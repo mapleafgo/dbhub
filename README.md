@@ -1,3 +1,5 @@
+**Fork notice:** this repository is a fork of [bytebase/dbhub](https://github.com/bytebase/dbhub). It tracks upstream `main` and adds **project config discovery** — when `--config` is omitted, DBHub loads `dbhub.toml` from the working directory, so the project you open picks the database. See [Project Config Discovery](#project-config-discovery).
+
 > [!NOTE]  
 > If you need an enterprise-level database MCP server with built-in guardrails like approval flow, access control, data masking, and audit logging beyond what DBHub offers, check out [Bytebase](https://www.bytebase.com/).
 
@@ -100,6 +102,24 @@ Also available as:
 - [Claude Code plugin](https://dbhub.ai/claude-code-plugin)
 
 See the [Installation Guide](https://dbhub.ai/installation) for all options, [Command-Line Options](https://dbhub.ai/config/command-line) for parameters, and [Multi-Database Configuration](https://dbhub.ai/config/toml) for connecting several databases at once.
+
+## Project Config Discovery
+
+This fork adds one behavior on top of upstream: **when `--config` is omitted, DBHub loads `./dbhub.toml` from the working directory if one exists.**
+
+MCP clients (Claude Code, Codex, Cursor) launch DBHub with the working directory set to the project you opened, so a `dbhub.toml` at that project's root is picked up automatically — the project selects the database, with no per-project MCP configuration and no registration step.
+
+```bash
+# In a project whose root has dbhub.toml: uses it
+npx @bytebase/dbhub@latest
+
+# Names the file explicitly; wins over the project config
+npx @bytebase/dbhub@latest --config ./dbhub.toml
+```
+
+Resolution order is `--config` → `<cwd>/dbhub.toml` → `DSN` / `DB_*` / `.env`. Only the working directory is checked — parent directories are not searched, so a session started in a subdirectory does not silently bind to a config further up. The auto-discovered path is logged at startup.
+
+Because a TOML file defines its own sources, a TOML config and `--dsn` cannot be combined; when both are present DBHub fails with an error naming the actual remedy instead of silently picking one. This is a breaking change relative to upstream: a `dbhub.toml` in the working directory is now loaded without being named.
 
 ## Development
 
