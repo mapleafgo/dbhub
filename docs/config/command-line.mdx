@@ -348,6 +348,8 @@ This page covers command-line flags and environment variables. For TOML configur
   npx @bytebase/dbhub@latest --config ./dbhub.toml --transport http --port 8080
   ```
 
+  When omitted, DBHub loads `./dbhub.toml` from the working directory if one exists. Only that directory is checked — parent directories are not searched. This is what lets a project's own `dbhub.toml` apply with no per-project setup, since MCP clients start DBHub in the project you opened. An explicit `--config` always wins, and a path that does not exist is an error rather than a fallback.
+
   See [TOML Configuration](/config/toml) for the complete reference, including source options, tool options, SSH tunnels, and custom tools.
 
   <Warning>
@@ -416,7 +418,7 @@ npx @bytebase/dbhub@latest --dsn "..." \
 | `--auth-token` | `DBHUB_AUTH_TOKEN` | string | Comma-separated bearer token(s) required on requests (http transport only, default: auth disabled) |
 | `--demo` | - | boolean | Use sample employee database |
 | `--id` | `ID` | string | Instance identifier for tool names |
-| `--config` | - | string | Path to TOML config file (default: `./dbhub.toml`) |
+| `--config` | - | string | Path to TOML config file (default: `./dbhub.toml` in the working directory, if present) |
 | `--dsn` | `DSN` | string | Database connection string (required unless using `--demo` or `--config`) |
 | - | `DB_TYPE` | string | Database type |
 | - | `DB_HOST` | string | Database hostname |

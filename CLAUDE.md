@@ -76,7 +76,7 @@ DBHub supports three configuration methods:
 ### 1. TOML Configuration File (Multi-Database)
 **Recommended for projects requiring multiple database connections**
 
-- Load with `--config=path/to/config.toml` (see `resolveTomlConfigPath` in `src/config/toml-loader.ts`)
+- Load with `--config=path/to/config.toml`, or by placing `dbhub.toml` in the working directory (see `resolveTomlConfigPath` in `src/config/toml-loader.ts`). Only the working directory is checked — no parent-directory walk — so an MCP client that starts DBHub in the project being worked in picks up that project's config with no registration step. `--config` always wins; an explicit path that does not exist is an error rather than a fallback.
 - Configuration structure:
   - `[[sources]]` - Database connection definitions with unique `id` fields
   - `[[tools]]` - Tool configuration (execution settings, custom tools)
@@ -132,7 +132,7 @@ DBHub supports three configuration methods:
 - `--host`: HTTP bind host (default: `0.0.0.0`; env `DBHUB_HOST`)
 - `--allowed-hosts`: Comma-separated extra hostnames accepted in the HTTP `Host`/`Origin` headers, for DNS-rebinding protection (env `DBHUB_ALLOWED_HOSTS`). Loopback is always allowed; on a wildcard bind (`0.0.0.0`/`::`) this machine's hostname and IPs are auto-allowed so local/by-IP access needs no config. Set the flag for other names (e.g. a reverse-proxy/public DNS name); use `*` to disable the check when fronted by your own auth/proxy. See `buildAllowedHosts`/`getSelfHosts` in `src/utils/cross-origin.ts`.
 - `--auth-token`: Comma-separated bearer token(s) required on every HTTP request via `Authorization: Bearer <token>` (env `DBHUB_AUTH_TOKEN`). Unset by default (no auth); configuring a token is itself the opt-in — there is no separate enforcement flag. A comma-separated list supports zero-downtime rotation (add the new token, redeploy, drop the old one) and per-client tokens. `/healthz` is exempt. Not OAuth — a flat shared-secret allow-list, not full identity-based authorization; see `validateAuthToken` in `src/utils/auth-token.ts`.
-- `--config`: Path to TOML configuration file
+- `--config`: Path to TOML configuration file. When omitted, `<cwd>/dbhub.toml` is used if present
 - `--demo`: Use bundled SQLite employee database
 - `--readonly`: Restrict to read-only SQL operations (deprecated - use TOML configuration instead)
 - `--max-rows`: Limit rows returned from SELECT queries (deprecated - use TOML configuration instead)
@@ -141,15 +141,20 @@ DBHub supports three configuration methods:
 
 ### Configuration Priority Order
 
-**Database sources** come from either a TOML file (`--config`) or a DSN. TOML defines
-sources for one or more databases; a DSN configures exactly one, so `--config` and
-`--dsn` together throw — see `resolveSourceConfigs` in `src/config/env.ts`.
+**Database sources** come from either a TOML file (`--config`, else `<cwd>/dbhub.toml`)
+or a DSN. TOML defines sources for one or more databases; a DSN configures exactly one,
+so a TOML config and `--dsn` together throw — see `resolveSourceConfigs` in
+`src/config/env.ts`.
 
 The guard is deliberately limited to the `--dsn` flag. `DSN` and `DB_*` environment
 variables (exported or from `.env`) are left alone because TOML `${VAR}` interpolation
 reads them: `dsn = "${DSN}"` is a supported way to keep credentials out of the file.
 
-Without `--config`, the DSN is resolved in this order:
+The `.env` preload that feeds TOML `${VAR}` interpolation is gated on either form of
+TOML selection (explicit `--config` or a discovered project config), so both support
+`dsn = "${DSN}"`.
+
+Without a TOML config, the DSN is resolved in this order:
 1. `--dsn` command-line argument
 2. `DSN` environment variable
 3. Individual `DB_*` environment variables

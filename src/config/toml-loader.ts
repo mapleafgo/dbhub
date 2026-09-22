@@ -13,9 +13,19 @@ import { BUILTIN_TOOL_EXECUTE_SQL, BUILTIN_TOOL_SEARCH_OBJECTS, ALL_BUILTIN_TOOL
  * Returns the parsed sources array, tools array, and the source of the config file
  */
 export function loadTomlConfig(): { sources: SourceConfig[]; tools?: TomlConfig['tools']; source: string } | null {
-  const configPath = resolveTomlConfigPath();
-  if (!configPath) {
+  const resolved = resolveTomlConfigPathDetail();
+  if (!resolved) {
     return null;
+  }
+  const configPath = resolved.path;
+
+  // Surface an auto-discovered project config so "why is DBHub connected here?"
+  // is answerable from the startup log alone. Explicit --config needs no such
+  // line: the user named that path themselves.
+  if (resolved.implicit) {
+    console.error(
+      `Using project config ${configPath} (auto-discovered from the working directory; pass --config to choose another)`
+    );
   }
 
   try {
@@ -53,15 +63,27 @@ export function loadTomlConfig(): { sources: SourceConfig[]; tools?: TomlConfig[
 }
 
 /**
- * Resolve the path to the TOML configuration file.
+ * The project config DBHub falls back to when --config is absent.
  *
- * TOML config is loaded only when --config names it. Keep it that way: TOML
- * selects the database outright and cannot be combined with a DSN, so
- * discovering a file implicitly (from the working directory, say) would let
- * DBHub silently connect somewhere the user never named, and make an
- * explicitly supplied DSN look ignored for no visible reason.
+ * Deliberately one level only: `<cwd>/dbhub.toml`. MCP clients launch DBHub
+ * with the working directory set to the project being worked in, so this
+ * makes "the project you opened" pick the database without any registration
+ * step. Walking parent directories instead would let a session in a nested
+ * directory silently bind to a config the user never opened.
  */
-export function resolveTomlConfigPath(): string | null {
+function getImplicitConfigPath(): string {
+  return path.join(process.cwd(), "dbhub.toml");
+}
+
+/**
+ * Resolve the TOML configuration file, and report how it was chosen.
+ *
+ * Precedence is: explicit `--config`, then the project config at
+ * `<cwd>/dbhub.toml`, then nothing (the caller falls back to DSN/env). An
+ * explicit `--config` naming a missing file is still a hard error rather than
+ * a silent slide onto the project config.
+ */
+function resolveTomlConfigPathDetail(): { path: string; implicit: boolean } | null {
   const args = parseCommandLineArgs();
 
   // A bare `--config`, or `--config=`, otherwise resolves to the sentinel
@@ -75,10 +97,31 @@ export function resolveTomlConfigPath(): string | null {
         `Configuration file specified by --config flag not found: ${configPath}`
       );
     }
-    return configPath;
+    return { path: configPath, implicit: false };
+  }
+
+  const implicitPath = getImplicitConfigPath();
+  if (fs.existsSync(implicitPath)) {
+    return { path: implicitPath, implicit: true };
   }
 
   return null;
+}
+
+/**
+ * Resolve the path to the TOML configuration file.
+ */
+export function resolveTomlConfigPath(): string | null {
+  return resolveTomlConfigPathDetail()?.path ?? null;
+}
+
+/**
+ * Whether the config in play was auto-discovered from the working directory
+ * rather than named by --config. Used by resolveSourceConfigs() to decide
+ * whether to preload .env, and to log which file was picked up.
+ */
+export function isImplicitTomlConfig(): boolean {
+  return resolveTomlConfigPathDetail()?.implicit ?? false;
 }
 
 /**

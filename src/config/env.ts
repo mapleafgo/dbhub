@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 import type { SSHTunnelConfig } from "../types/ssh.js";
 import { parseSSHConfig, looksLikeSSHAlias, getDefaultSSHConfigPath } from "../utils/ssh-config-parser.js";
 import type { SourceConfig } from "../types/config.js";
-import { loadTomlConfig } from "./toml-loader.js";
+import { loadTomlConfig, isImplicitTomlConfig } from "./toml-loader.js";
 import { obfuscateDSNPassword, parseConnectionInfoFromDSN } from "../utils/dsn-obfuscate.js";
 import { SafeURL } from "../utils/safe-url.js";
 
@@ -693,7 +693,7 @@ export function resolveSSHConfig(): { config: SSHTunnelConfig; source: string } 
 
 /**
  * Resolve source configurations from TOML config or fallback to single DSN
- * Sources come from either TOML config (--config flag only; no cwd auto-discovery)
+ * Sources come from either TOML config (--config, else <cwd>/dbhub.toml)
  * or a single DSN/env vars — never both. Supplying both throws.
  * Returns array of source configs and the source of the configuration
  */
@@ -706,7 +706,16 @@ export async function resolveSourceConfigs(): Promise<{ sources: SourceConfig[];
   // Scoped to TOML mode: on the DSN path resolveDSN() loads .env itself, and it
   // has to do so after checking process.env in order to report whether a value
   // came from the environment or from the file.
-  if (parseCommandLineArgs().config) {
+  //
+  // Gated on either form of TOML selection — an explicit --config, or a
+  // project config discovered in the working directory — since both parse the
+  // file and both support `${VAR}` interpolation.
+  //
+  // The discovered-config branch additionally requires that TOML is actually
+  // in play: --demo skips TOML outright, so there is no interpolation to feed,
+  // and preloading would leak unrelated settings (PORT, TRANSPORT) out of .env
+  // in a mode that previously never read it.
+  if (parseCommandLineArgs().config || (!isDemoMode() && isImplicitTomlConfig())) {
     loadEnvFiles();
   }
 
@@ -732,11 +741,18 @@ export async function resolveSourceConfigs(): Promise<{ sources: SourceConfig[];
       // legitimately reads them: `dsn = "${DSN}"` is a supported way to keep
       // credentials out of the config file.
       if (parseCommandLineArgs().dsn) {
+        // Name the remedy that actually applies: an auto-discovered project
+        // config has no --config flag to drop, so pointing the user at one
+        // would send them looking for a flag they never passed.
+        const remedy = isImplicitTomlConfig()
+          ? "Either remove the --dsn flag, or remove/rename the project config " +
+            "(or run DBHub from a directory without one)."
+          : "Either remove the --dsn flag or drop the --config flag.";
         throw new Error(
           `The --dsn flag cannot be used with TOML configuration (${tomlConfig.source}). ` +
           "TOML config defines database sources directly and supports multiple databases, " +
           "while a DSN configures a single database. " +
-          "Either remove the --dsn flag or drop the --config flag."
+          remedy
         );
       }
 

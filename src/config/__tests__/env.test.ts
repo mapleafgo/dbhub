@@ -3,11 +3,14 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { buildDSNFromEnvParams, redactDSN, resolveDSN, resolveHost, resolveId } from '../env.js';
-import { loadTomlConfig } from '../toml-loader.js';
+import { loadTomlConfig, isImplicitTomlConfig } from '../toml-loader.js';
 
-// Mock toml-loader to prevent it from loading dbhub.toml during tests
+// Mock toml-loader to prevent it from loading dbhub.toml during tests.
+// isImplicitTomlConfig() defaults to false so the .env-before-TOML load stays
+// scoped to the explicit --config case unless a test opts in.
 vi.mock('../toml-loader.js', () => ({
   loadTomlConfig: vi.fn(() => null),
+  isImplicitTomlConfig: vi.fn(() => false),
 }));
 
 // Make dotenv a no-op by default so tests never pick up a real .env/.env.local
@@ -631,6 +634,19 @@ describe('Environment Configuration Tests', () => {
       );
     });
 
+    it('points an auto-discovered project config conflict at the project config, not --config', async () => {
+      // No --config was passed, so telling the user to drop it would send them
+      // looking for a flag they never used. The remedy must name the project
+      // config that actually caused the conflict.
+      vi.mocked(isImplicitTomlConfig).mockReturnValue(true);
+      process.argv = ['node', 'script.js', '--dsn=sqlite://:memory:'];
+      const { resolveSourceConfigs } = await import('../env.js');
+
+      await expect(resolveSourceConfigs()).rejects.toThrow(
+        /remove\/rename the project config/
+      );
+    });
+
     it('allows a DSN env var alongside TOML config', async () => {
       // TOML interpolation reads process.env, so `dsn = "${DSN}"` in the config
       // file is a supported way to keep credentials out of it. An exported DSN
@@ -688,6 +704,114 @@ describe('Environment Configuration Tests', () => {
       await expect(resolveSourceConfigs()).resolves.toMatchObject({
         source: 'dbhub.toml',
       });
+    });
+  });
+
+  describe('resolveSourceConfigs with an auto-discovered project config', () => {
+    const originalArgv = process.argv;
+    const originalCwd = process.cwd();
+    let tempDir: string;
+
+    beforeEach(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'implicit-toml-'));
+      process.chdir(tempDir);
+      // No --config: the project config in the working directory is what
+      // selects TOML.
+      process.argv = ['node', 'script.js'];
+    });
+
+    afterEach(() => {
+      process.chdir(originalCwd);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      process.argv = originalArgv;
+      vi.mocked(loadTomlConfig).mockReturnValue(null);
+      vi.mocked(isImplicitTomlConfig).mockReturnValue(false);
+    });
+
+    it('uses the project config when --config is absent', async () => {
+      vi.mocked(isImplicitTomlConfig).mockReturnValue(true);
+      vi.mocked(loadTomlConfig).mockReturnValue({
+        sources: [{ id: 'project_db', type: 'sqlite', dsn: 'sqlite://a.db' }],
+        source: 'dbhub.toml',
+      } as any);
+      const { resolveSourceConfigs } = await import('../env.js');
+
+      await expect(resolveSourceConfigs()).resolves.toMatchObject({
+        source: 'dbhub.toml',
+      });
+    });
+
+    it('loads .env before an auto-discovered project config', async () => {
+      // The .env preload is gated on TOML being in play, and an implicit config
+      // is TOML just as much as --config is — `${VAR}` interpolation must work
+      // in both cases.
+      vi.mocked(isImplicitTomlConfig).mockReturnValue(true);
+      fs.writeFileSync(
+        path.join(tempDir, '.env'),
+        'DSN_FROM_ENV_FILE=sqlite://interpolated.db\n'
+      );
+      dotenvState.passthrough = true;
+
+      let dsnSeenAtTomlLoadTime: string | undefined;
+      vi.mocked(loadTomlConfig).mockImplementation(() => {
+        dsnSeenAtTomlLoadTime = process.env.DSN_FROM_ENV_FILE;
+        return {
+          sources: [{ id: 'db1', type: 'sqlite', dsn: 'sqlite://a.db' }],
+          source: 'dbhub.toml',
+        } as any;
+      });
+
+      try {
+        const { resolveSourceConfigs } = await import('../env.js');
+        await resolveSourceConfigs();
+
+        expect(dsnSeenAtTomlLoadTime).toBe('sqlite://interpolated.db');
+      } finally {
+        dotenvState.passthrough = false;
+        delete process.env.DSN_FROM_ENV_FILE;
+      }
+    });
+
+    it('skips the project config in demo mode', async () => {
+      // --demo is self-contained; an ambient project config must not override
+      // the bundled sample database.
+      vi.mocked(isImplicitTomlConfig).mockReturnValue(true);
+      process.argv = ['node', 'script.js', '--demo'];
+      // The demo database lives in the repo, so run from there rather than the
+      // empty temp directory the other tests in this block use.
+      process.chdir(originalCwd);
+      // Call counts accumulate across tests; clear so the assertion below is
+      // about this invocation only.
+      vi.mocked(loadTomlConfig).mockClear();
+      const { resolveSourceConfigs } = await import('../env.js');
+
+      await expect(resolveSourceConfigs()).resolves.toMatchObject({
+        source: 'demo mode',
+      });
+      expect(vi.mocked(loadTomlConfig)).not.toHaveBeenCalled();
+    });
+
+    it('does not preload .env in demo mode even with a project config present', async () => {
+      // --demo skips TOML, so there is no ${VAR} interpolation to feed. Loading
+      // .env anyway would leak unrelated settings (PORT, TRANSPORT) into a mode
+      // that previously never read the file.
+      vi.mocked(isImplicitTomlConfig).mockReturnValue(true);
+      fs.writeFileSync(path.join(tempDir, '.env'), 'PORT=12345\n');
+      process.argv = ['node', 'script.js', '--demo'];
+      dotenvState.passthrough = true;
+      delete process.env.PORT;
+
+      try {
+        const { resolveSourceConfigs } = await import('../env.js');
+        // The demo database lives in the repo, so this rejects from the empty
+        // temp directory; the assertion is about what .env contributed.
+        await resolveSourceConfigs().catch(() => undefined);
+
+        expect(process.env.PORT).toBeUndefined();
+      } finally {
+        dotenvState.passthrough = false;
+        delete process.env.PORT;
+      }
     });
   });
 });
