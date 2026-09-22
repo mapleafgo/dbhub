@@ -5,13 +5,24 @@ title: "TOML Configuration"
 TOML configuration is the recommended way to configure DBHub for multi-database setups and advanced configurations. It provides more flexibility than command-line options or environment variables.
 
 <Note>
-Load a TOML file with `--config`:
+DBHub loads a TOML file from the first of:
+
+1. The path passed to `--config`
+2. `./dbhub.toml` in the working directory, when `--config` is absent
+
+The second is what makes a project config work with no per-project setup: MCP clients (Claude Code, Codex, Cursor) launch DBHub with the working directory set to the project you opened, so a `dbhub.toml` at that project's root is picked up automatically.
 
 ```bash
+# Picks up ./dbhub.toml from the working directory
+npx @bytebase/dbhub@latest
+
+# Names the file explicitly (wins over the project config)
 npx @bytebase/dbhub@latest --config ./dbhub.toml
 ```
 
-A TOML file defines its own database sources, so `--config` and `--dsn` cannot be combined. Environment variables such as `DSN` and `DB_*` remain available to the file through [`${VAR}` interpolation](#environment-variable-interpolation).
+Only the working directory itself is checked — parent directories are not searched, so a session started in a subdirectory does not silently bind to a config further up. DBHub logs the auto-discovered path at startup.
+
+A TOML file defines its own database sources, so a TOML config and `--dsn` cannot be combined. Environment variables such as `DSN` and `DB_*` remain available to the file through [`${VAR}` interpolation](#environment-variable-interpolation).
 </Note>
 
 ## Overview

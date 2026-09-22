@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { loadTomlConfig, buildDSNFromSource, interpolateEnvVars } from '../toml-loader.js';
+import { loadTomlConfig, buildDSNFromSource, interpolateEnvVars, isImplicitTomlConfig } from '../toml-loader.js';
 import type { SourceConfig } from '../../types/config.js';
 import { SQLiteConnector } from '../../connectors/sqlite/index.js';
 import fs from 'fs';
@@ -254,9 +254,10 @@ dsn = "mysql://user:pass@localhost:3306/db"
       }
     });
 
-    it('should ignore a dbhub.toml in the current directory', () => {
-      // Only --config selects a config file, so running from a directory that
-      // happens to contain one must not repoint DBHub at that database.
+    it('should auto-discover dbhub.toml in the current directory when --config is absent', () => {
+      // MCP clients launch DBHub with the working directory set to the project
+      // being worked in, so a project-level dbhub.toml is what binds "the
+      // project you opened" to a database without any registration step.
       const tomlContent = `
 [[sources]]
 id = "ambient_db"
@@ -265,7 +266,86 @@ dsn = "postgres://user:pass@localhost:5432/ambient"
       fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
       process.argv = ['node', 'test'];
 
+      const result = loadTomlConfig();
+
+      expect(result?.sources[0].id).toBe('ambient_db');
+      expect(result?.source).toBe('dbhub.toml');
+    });
+
+    it('should prefer --config over a dbhub.toml in the current directory', () => {
+      // An explicit flag is unambiguous intent; the project config must not
+      // shadow it.
+      fs.writeFileSync(
+        path.join(tempDir, 'dbhub.toml'),
+        `
+[[sources]]
+id = "ambient_db"
+dsn = "postgres://user:pass@localhost:5432/ambient"
+`
+      );
+      const explicitPath = path.join(tempDir, 'explicit.toml');
+      fs.writeFileSync(
+        explicitPath,
+        `
+[[sources]]
+id = "explicit_db"
+dsn = "postgres://user:pass@localhost:5432/explicit"
+`
+      );
+      process.argv = ['node', 'test', '--config', explicitPath];
+
+      const result = loadTomlConfig();
+
+      expect(result?.sources[0].id).toBe('explicit_db');
+      expect(result?.source).toBe('explicit.toml');
+    });
+
+    it('should not walk up to a parent directory for dbhub.toml', () => {
+      // One level only: a nested working directory must not silently bind to a
+      // config the user never opened.
+      fs.writeFileSync(
+        path.join(tempDir, 'dbhub.toml'),
+        `
+[[sources]]
+id = "parent_db"
+dsn = "postgres://user:pass@localhost:5432/parent"
+`
+      );
+      const nested = path.join(tempDir, 'nested', 'deeper');
+      fs.mkdirSync(nested, { recursive: true });
+      process.chdir(nested);
+      process.argv = ['node', 'test'];
+
       expect(loadTomlConfig()).toBeNull();
+    });
+
+    it('should report the discovered config as implicit', () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'dbhub.toml'),
+        `
+[[sources]]
+id = "ambient_db"
+dsn = "postgres://user:pass@localhost:5432/ambient"
+`
+      );
+      process.argv = ['node', 'test'];
+
+      expect(isImplicitTomlConfig()).toBe(true);
+    });
+
+    it('should not report an explicit --config as implicit', () => {
+      const explicitPath = path.join(tempDir, 'explicit.toml');
+      fs.writeFileSync(
+        explicitPath,
+        `
+[[sources]]
+id = "explicit_db"
+dsn = "postgres://user:pass@localhost:5432/explicit"
+`
+      );
+      process.argv = ['node', 'test', '--config', explicitPath];
+
+      expect(isImplicitTomlConfig()).toBe(false);
     });
 
     it('should load multiple sources', () => {
